@@ -341,7 +341,7 @@ def _fmt_forecast(data, fallback_location, unit, days, display_name=""):
 
 @register(
     "astrbot_plugin_weather",
-    "ning",
+    "linker9527",
     "基于 wttr.in 的天气查询：当前天气、多日预报、一行速览、PNG 天气图",
     "1.2.0",
     "https://github.com/chubin/wttr.in",

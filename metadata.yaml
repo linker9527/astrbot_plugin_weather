@@ -1,6 +1,6 @@
 name: astrbot_plugin_weather
 display_name: 天气查询
-author: ning
+author: linker9527
 description: 免费天气查询，基于 wttr.in 公开服务，无需 API Key、无需注册、零成本。支持当前实况、三天预报、一行速览和 PNG 天气图，中文地名/机场码/坐标都能查，可用命令或 LLM 自然语言调用。
 short_desc: 用 wttr.in 免费查天气：当前实况、三天预报、天气图，免 API Key、免注册
 version: 1.2.0
