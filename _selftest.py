@@ -157,6 +157,10 @@ async def run():
     check("metadata name", "name: astrbot_plugin_weather" in meta)
     check("display_name", "display_name: 天气查询" in meta)
     check("author", "author: linker9527" in meta)
+    check(
+        "repo",
+        "repo: https://github.com/linker9527/astrbot_plugin_weather" in meta,
+    )
     check("register author", main.WeatherPlugin._register_args[1] == "linker9527")
     check("metadata version", "version: 1.2.0" in meta)
     check(
