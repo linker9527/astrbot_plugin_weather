@@ -379,8 +379,8 @@ def _fmt_forecast(data, fallback_location, unit, days, display_name=""):
     "astrbot_plugin_weather",
     "linker9527",
     "基于 wttr.in 的天气查询：当前天气、多日预报、一行速览、PNG 天气图",
-    "1.2.0",
-    "https://github.com/chubin/wttr.in",
+    "1.2.1",
+    "https://github.com/linker9527/astrbot_plugin_weather",
 )
 class WeatherPlugin(Star):
     def __init__(self, context: Context, config=None):
@@ -401,6 +401,14 @@ class WeatherPlugin(Star):
             return max(1.0, float(self._cfg("timeout", default)))
         except (TypeError, ValueError):
             return float(default)
+
+    def _forecast_days(self):
+        """预报天数统一解析：非法值回退 3，并夹到 1~3（上游最多 3 天）。"""
+        try:
+            days = int(self._cfg("forecast_days", 3))
+        except (TypeError, ValueError):
+            days = 3
+        return max(1, min(3, days))
 
     async def _query(self, location, view, days):
         unit = self._cfg("units", "metric")
@@ -533,9 +541,7 @@ class WeatherPlugin(Star):
         if days and not sub:
             sub = "forecast"
         if sub == "forecast":
-            if not days:
-                days = int(self._cfg("forecast_days", 3))
-            days = max(1, min(3, days))
+            days = max(1, min(3, days)) if days else self._forecast_days()
             try:
                 yield event.plain_result(await self._query(loc, "forecast", days))
             except _QUERY_ERRORS as e:
@@ -570,12 +576,7 @@ class WeatherPlugin(Star):
         """多日预报快捷命令：/forecast [地点]（多词地点同样走 message_str 解析）"""
         _, rest, days = self._parse_args(event)
         loc = self._resolve_location(rest)
-        if not days:
-            try:
-                days = int(self._cfg("forecast_days", 3))
-            except (TypeError, ValueError):
-                days = 3
-        days = max(1, min(3, days))
+        days = max(1, min(3, days)) if days else self._forecast_days()
         try:
             yield event.plain_result(await self._query(loc, "forecast", days))
         except _QUERY_ERRORS as e:
@@ -597,7 +598,7 @@ class WeatherPlugin(Star):
             return
         loc = self._resolve_location(location)
         view = "forecast" if str(view).strip().lower() == "forecast" else "current"
-        days = int(self._cfg("forecast_days", 3))
+        days = self._forecast_days()
         try:
             yield event.plain_result(await self._query(loc, view, days))
         except _QUERY_ERRORS as e:

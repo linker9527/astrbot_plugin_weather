@@ -171,6 +171,8 @@ with open("metadata.yaml", encoding="utf-8") as f:
     META = f.read()
 with open("_conf_schema.json", encoding="utf-8") as f:
     SCHEMA = json.load(f)
+with open("README.md", encoding="utf-8") as f:
+    README = f.read()
 
 
 async def run():
@@ -185,7 +187,11 @@ async def run():
         "repo: https://github.com/linker9527/astrbot_plugin_weather" in meta,
     )
     check("register author", main.WeatherPlugin._register_args[1] == "linker9527")
-    check("metadata version", "version: 1.2.0" in meta)
+    check("metadata version", "version: 1.2.1" in meta)
+    check(
+        "更新日志含 v1.2.1 与说明",
+        "### v1.2.1" in README and "修复部分已知bug" in README,
+    )
     check(
         "description 突出免费",
         "description: 免费天气查询" in meta and "无需 API Key" in meta,
@@ -226,7 +232,7 @@ async def run():
         "register args",
         main.WeatherPlugin._register_args[0] == "astrbot_plugin_weather",
     )
-    check("register version", main.WeatherPlugin._register_args[3] == "1.2.0")
+    check("register version", main.WeatherPlugin._register_args[3] == "1.2.1")
     handlers = ["cmd_weather", "cmd_forecast", "tool_get_weather", "tool_oneline"]
     for name in handlers:
         fn = getattr(main.WeatherPlugin, name)
@@ -373,6 +379,33 @@ async def run():
     )
     check(
         "B7 _png_urls 接受数字", "/518000_m.png" in main._png_urls(518000, "m", "zh")[0]
+    )
+    # ---- 复查轮 R1/R2/R3 ----
+    check(
+        "R1 合法 forecast_days 正常",
+        main.WeatherPlugin(Context(), {"forecast_days": 2})._forecast_days() == 2,
+    )
+    check(
+        "R1 forecast_days>3 夹到 3",
+        main.WeatherPlugin(Context(), {"forecast_days": 10})._forecast_days() == 3,
+    )
+    check(
+        "R1 forecast_days=0 夹到 1",
+        main.WeatherPlugin(Context(), {"forecast_days": 0})._forecast_days() == 1,
+    )
+    check(
+        "R1 forecast_days 非法字符串回退 3",
+        main.WeatherPlugin(Context(), {"forecast_days": "abc"})._forecast_days() == 3,
+    )
+    check(
+        "R1 forecast_days=None 回退 3",
+        main.WeatherPlugin(Context(), {"forecast_days": None})._forecast_days() == 3,
+    )
+    check(
+        "R3 @register repo 指向插件仓库",
+        main.WeatherPlugin._register_args[4]
+        == "https://github.com/linker9527/astrbot_plugin_weather",
+        str(main.WeatherPlugin._register_args[4]),
     )
     p8 = main.WeatherPlugin(Context(), {"timeout": 0})
     check("B8 timeout=0 被夹到 1 秒", p8._timeout(12) == 1.0, f"={p8._timeout(12)}")
