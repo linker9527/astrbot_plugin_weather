@@ -47,7 +47,7 @@
 | GPS 坐标 | `31.23,121.47`、`-78.46,106.79` | 逗号编码成 `%2C` 实测等价 |
 | 邮编 / 区号 | `94107`（美国）、`518000`（深圳） | |
 | `~` 前缀 | `~Eiffel Tower` | 等同地标写法 |
-| 留空 | — | 插件显示帮助；`default_location` 为空时 wttr.in 按 IP 定位（实测本机解析为 `Shenzhen, Guangdong, CN`） |
+| 留空 | — | 用配置里的 `default_location`（默认 `Beijing`）；只有 `/weather help` 或 `/weather 帮助` 才显示帮助 |
 
 两点注意：
 

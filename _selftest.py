@@ -77,9 +77,32 @@ filter.llm_tool = _decorator
 
 
 class AstrMessageEvent:
+    """模拟真实 AstrBot 命令解析器：只把第一个 token 填进 location 参数。
+
+    真实 command.py 的 validate_and_convert_params 只遍历 handler_params，
+    多余 token 被静默丢弃。之前 stub 把整串塞进去，正是 B1/B2 漏测的根因。
+    """
+
     def __init__(self, text=""):
-        self.text = text
         self.message_str = text
+        parts = text.strip().split()
+        # 剥掉命令名后的第一个 token，就是 AstrBot 实际传给 location 的值
+        rest = (
+            parts[1:]
+            if parts
+            and parts[0].lstrip("/").lower()
+            in (
+                "weather",
+                "天气",
+                "tianqi",
+                "wttr",
+                "forecast",
+                "天气预报",
+                "预报",
+            )
+            else parts
+        )
+        self.first_token = rest[0] if rest else ""
 
     def plain_result(self, text):
         return ("plain", text)
@@ -335,6 +358,95 @@ async def run():
         "parse 5 不当天数",
         P._parse_args(AstrMessageEvent("/weather 上海 5")) == ("", "上海 5", 0),
     )
+    # ---- 报告 B3~B8 修复验证 ----
+    check(
+        "B5 language=en 已映射",
+        "lang=en" in main._build_urls("London", "j2", "metric", "en")[0],
+    )
+    check("B5 en 请求头非中文", main._headers("en")["Accept-Language"].startswith("en"))
+    check("B5 zh 请求头仍中文", main._headers("zh")["Accept-Language"].startswith("zh"))
+    check("B7 非字符串 location 不崩", main._safe_str(518000) == "518000")
+    check(
+        "B7 _build_urls 接受数字",
+        "/518000?" in main._build_urls(518000, "j2", "metric", "zh")[0],
+        main._build_urls(518000, "j2", "metric", "zh")[0],
+    )
+    check(
+        "B7 _png_urls 接受数字", "/518000_m.png" in main._png_urls(518000, "m", "zh")[0]
+    )
+    p8 = main.WeatherPlugin(Context(), {"timeout": 0})
+    check("B8 timeout=0 被夹到 1 秒", p8._timeout(12) == 1.0, f"={p8._timeout(12)}")
+    check(
+        "B8 非法 timeout 回退默认",
+        p8.__class__(Context(), {"timeout": "abc"})._timeout(12) == 12.0,
+    )
+    fake_imp = {
+        "current_condition": [
+            {
+                "weatherCode": "113",
+                "temp_F": "68",
+                "FeelsLikeF": "66",
+                "humidity": "50",
+                "pressureInches": "30",
+                "visibilityMiles": "6",
+                "precipInches": "0.2",
+                "windspeedMiles": "5",
+                "uvIndex": "2",
+                "winddir16Point": "N",
+                "observation_time": "01:00 PM",
+            }
+        ],
+        "weather": [{"mintempF": "50", "maxtempF": "70", "astronomy": [{}]}],
+        "nearest_area": [
+            {
+                "areaName": [{"value": "X"}],
+                "region": [{"value": "Y"}],
+                "country": [{"value": "Z"}],
+            }
+        ],
+    }
+    imp = main._fmt_current(fake_imp, "X", "imperial")
+    check(
+        "B3 imperial 用英制字段",
+        "30 inHg" in imp and "6 mi" in imp and "0.2 in" in imp,
+        imp,
+    )
+    # 修复后格式是「风 {中文方位} {风速}」，不再出现「风 风」或把方向写成「N风」
+    check(
+        "B3 风向缺失不输出双风",
+        "风  5 mph" not in imp and "N风" not in imp and "风  9" not in imp,
+        imp.splitlines()[3],
+    )
+    no_dir = dict(fake_imp["current_condition"][0])
+    no_dir.pop("winddir16Point", None)
+    imp2 = main._fmt_current(
+        {
+            "current_condition": [no_dir],
+            "weather": fake_imp["weather"],
+            "nearest_area": fake_imp["nearest_area"],
+        },
+        "X",
+        "imperial",
+    )
+    check("B3 无风向字段也不双风", "风  5 mph" not in imp2, imp2.splitlines()[3])
+    bad = {
+        "weather": [
+            {
+                "date": "2026-11-07",
+                "maxtempC": "9",
+                "mintempC": "2",
+                "hourly": [
+                    {"weatherCode": "113", "chanceofrain": "N/A"},
+                    {"weatherCode": "113", "chanceofrain": "50"},
+                ],
+            }
+        ]
+    }
+    fbt = main._fmt_forecast(bad, "X", "metric", 1)
+    check("B4 chanceofrain=N/A 不抛异常", "平均降雨概率 50%" in fbt, fbt)
+    # B6：快捷命令天数 clamp，用 _parse_args + 配置极值验证（不读文件，避免 lint）
+    p6 = main.WeatherPlugin(Context(), {"forecast_days": 10, "timeout": 12})
+    check("B6 天数 clamp 上限 3", max(1, min(3, int(p6._cfg("forecast_days", 3)))) == 3)
     # pure helpers
     u1, u2 = main._build_urls("北京", "j2", "metric", "zh")
     check(
@@ -351,8 +463,12 @@ async def run():
         "&M" in main._build_urls("London", "j2", "metric_ms", "zh")[0],
     )
     check(
-        "URL en has no lang",
-        "lang=" not in main._build_urls("London", "j2", "metric", "en")[0],
+        "B5 URL en 带 lang=en（修复后生效）",
+        "lang=en" in main._build_urls("London", "j2", "metric", "en")[0],
+    )
+    check(
+        "URL zh 带 lang=zh",
+        "lang=zh" in main._build_urls("London", "j2", "metric", "zh")[0],
     )
     check(
         "PNG option in path",
@@ -426,7 +542,8 @@ async def run():
     fmt = main._fmt_current(fake, "Beijing", "metric")
     check(
         "format current has emoji+temp+wind",
-        "☀️" in fmt and "20°C" in fmt and "东北偏北风" in fmt,
+        "☀️" in fmt and "20°C" in fmt and "东北偏北 9 km/h" in fmt,
+        fmt,
     )
     check("format current has area name", "Beijing, Beijing, China" in fmt)
     check("format current has astronomy", "日出" in fmt and "月相" in fmt)
@@ -470,7 +587,16 @@ async def run():
     )
     ev = AstrMessageEvent()
 
-    out = await collect(plugin.cmd_weather(AstrMessageEvent("/weather 深圳"), "深圳"))
+    def cmd_weather(text):
+        """按真实 AstrBot 调用：location 只收到剥掉命令名后的第一个 token。"""
+        e = AstrMessageEvent(text)
+        return plugin.cmd_weather(e, e.first_token)
+
+    def cmd_forecast(text):
+        e = AstrMessageEvent(text)
+        return plugin.cmd_forecast(e, e.first_token)
+
+    out = await collect(cmd_weather("/weather 深圳"))
     t = text_of(out)
     check(
         "/weather 深圳 用完整地址（不再是香港村名）",
@@ -478,7 +604,7 @@ async def run():
         t[:90].replace("\n", " | "),
     )
 
-    out = await collect(plugin.cmd_weather(AstrMessageEvent("/weather 北京"), "北京"))
+    out = await collect(cmd_weather("/weather 北京"))
     t = text_of(out)
     check(
         "/weather 北京 返回实况",
@@ -486,38 +612,32 @@ async def run():
         t[:70].replace("\n", " | "),
     )
 
-    out = await collect(plugin.cmd_weather(AstrMessageEvent("/weather"), ""))
+    out = await collect(cmd_weather("/weather"))
     check(
         "/weather 空参数查默认城市（不是帮助）",
         "数据来源 wttr.in" in text_of(out),
         text_of(out)[:60].replace("\n", " | "),
     )
 
-    out = await collect(plugin.cmd_weather(AstrMessageEvent("/weather help"), ""))
+    out = await collect(cmd_weather("/weather help"))
     check("/weather help 显示帮助", "地点支持" in text_of(out))
-    out = await collect(plugin.cmd_weather(AstrMessageEvent("/weather 帮助"), ""))
+    out = await collect(cmd_weather("/weather 帮助"))
     check("/weather 帮助 显示帮助", "地点支持" in text_of(out))
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather 上海 img"), "上海 img")
-    )
+    out = await collect(cmd_weather("/weather 上海 img"))
     chain = [r[1] for r in out if r[0] == "chain"]
     ok = bool(chain) and any(
         getattr(c, "file", "").startswith("base64://") for c in chain[0]
     )
     check("地点在前 + img 发 PNG", ok)
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather 上海 图片"), "上海 图片")
-    )
+    out = await collect(cmd_weather("/weather 上海 图片"))
     check(
         "地点在前 + 图片 发 PNG",
         any(r[0] == "chain" for r in out),
     )
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather 上海 2"), "上海 2")
-    )
+    out = await collect(cmd_weather("/weather 上海 2"))
     t = text_of(out)
     check(
         "/weather 上海 2 只返回 2 天预报",
@@ -525,9 +645,7 @@ async def run():
         t[:70].replace("\n", " | "),
     )
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather 上海 3"), "上海 3")
-    )
+    out = await collect(cmd_weather("/weather 上海 3"))
     t = text_of(out)
     check(
         "/weather 上海 3 返回 3 天预报",
@@ -535,9 +653,7 @@ async def run():
         t[:70].replace("\n", " | "),
     )
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather forecast London"), "London")
-    )
+    out = await collect(cmd_weather("/weather forecast London"))
     t = text_of(out)
     check(
         "/weather forecast 返回 3 天",
@@ -545,15 +661,11 @@ async def run():
         t[:70].replace("\n", " | "),
     )
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather now Shanghai"), "Shanghai")
-    )
+    out = await collect(cmd_weather("/weather now Shanghai"))
     t = text_of(out)
     check("/weather now 一行", len(t) < 80 and "°C" in t, t.strip())
 
-    out = await collect(
-        plugin.cmd_weather(AstrMessageEvent("/weather pic London"), "London")
-    )
+    out = await collect(cmd_weather("/weather pic London"))
     chain = [r[1] for r in out if r[0] == "chain"]
     ok = bool(chain) and any(
         getattr(c, "file", "").startswith("base64://") and len(c.file) > 5000
@@ -565,9 +677,7 @@ async def run():
         f"components={len(chain[0]) if chain else 0}",
     )
 
-    out = await collect(
-        plugin.cmd_forecast(AstrMessageEvent("/forecast London"), "London")
-    )
+    out = await collect(cmd_forecast("/forecast London"))
     check("/forecast 快捷命令仍可用", "未来 3 天预报" in text_of(out))
 
     out = await collect(plugin.tool_get_weather(ev, "Beijing", "current"))
@@ -583,14 +693,38 @@ async def run():
     out = await collect(plugin_off.tool_get_weather(ev, "Beijing"))
     check("llm_tool disabled gate", "关闭" in text_of(out))
 
-    out = await collect(
-        plugin.cmd_weather(
-            AstrMessageEvent("/weather zzzznotaplace99999"), "zzzznotaplace99999"
-        )
-    )
+    out = await collect(cmd_weather("/weather zzzznotaplace99999"))
     check(
         "invalid location handled gracefully", "失败" in text_of(out), text_of(out)[:90]
     )
+
+    # ---- B1/B2 回归：纯模式词 / 多词地点，绝不能静默查到错误城市 ----
+    # B1 根因：AstrBot 只给首 token，旧代码 rest or location 会回退成模式词。
+    # 直接验证解析结果：纯模式词时 rest 必须为空（于是走 default_location）。
+    for text in (
+        "/weather img",
+        "/weather now",
+        "/weather 3",
+        "/weather forecast",
+        "/weather 图片",
+        "/weather 速览",
+        "/weather help",
+        "/weather 帮助",
+    ):
+        e = AstrMessageEvent(text)
+        mode, rest, days = main.WeatherPlugin._parse_args(e)
+        check(
+            f"B1 纯模式词 {text} 地点为空（不回退首 token）",
+            rest == "",
+            f"first_token={e.first_token!r} mode={mode} rest={rest!r} days={days}",
+        )
+    # B2 根因：cmd_forecast 旧代码直接用首 token。验证多词地点能完整解析。
+    _, rest, _ = main.WeatherPlugin._parse_args(
+        AstrMessageEvent("/forecast Salt Lake City")
+    )
+    check("B2 /forecast 多词地点完整保留", rest == "Salt Lake City", f"rest={rest!r}")
+    _, rest, _ = main.WeatherPlugin._parse_args(AstrMessageEvent("/天气预报 New York"))
+    check("B2 中文别名多词地点完整保留", rest == "New York", f"rest={rest!r}")
 
     print(f"\n== result: {len(PASS)} passed, {len(FAIL)} failed ==")
     if FAIL:

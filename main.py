@@ -103,6 +103,7 @@ _LANG = {
     "zh": "zh",
     "zh-cn": "zh",
     "zh-tw": "zh",
+    "en": "en",
     "ja": "ja",
     "ko": "ko",
     "fr": "fr",
@@ -110,6 +111,29 @@ _LANG = {
     "es": "es",
     "ru": "ru",
 }
+# 传给 wttr.in 的 Accept-Language；配置 language 决定它，不再硬编码中文。
+_ACCEPT_LANG = {
+    "zh": "zh-CN,zh;q=0.9",
+    "en": "en-US,en;q=0.9",
+    "ja": "ja-JP,ja;q=0.9",
+    "ko": "ko-KR,ko;q=0.9",
+    "fr": "fr-FR,fr;q=0.9",
+    "de": "de-DE,de;q=0.9",
+    "es": "es-ES,es;q=0.9",
+    "ru": "ru-RU,ru;q=0.9",
+}
+
+
+def _headers(lang):
+    lc = (lang or "").strip().lower()
+    accept = _ACCEPT_LANG.get(_LANG.get(lc, "zh"), _ACCEPT_LANG["zh"])
+    return {"User-Agent": "curl/8.0", "Accept-Language": accept}
+
+
+def _safe_str(raw):
+    """LLM 工具可能传非字符串，统一转成字符串，避免 .strip() 抛 AttributeError。"""
+    return str(raw or "").strip()
+
 
 DEFAULT_LOCATION = "Beijing"
 
@@ -170,7 +194,7 @@ def _loc_name(data, fallback):
 
 def _build_text_urls(location, unit, lang):
     """构造用于取 FullAddress 的 ?T1 纯文本 URL（主/备域名各一个）。"""
-    loc = urllib.parse.quote(location.strip(), safe="+~@")
+    loc = urllib.parse.quote(_safe_str(location), safe="+~@")
     query = ["T1"]
     flag = _UNIT_FLAG.get(unit)
     if flag:
@@ -202,11 +226,12 @@ def _parse_full_address(text):
 
 async def _fetch_full_address(session, location, unit, lang, timeout):
     """从 ?T1 纯文本输出里取 FullAddress；取不到返回空串，由调用方回退。"""
-    headers = {"User-Agent": "curl/8.0", "Accept-Language": "zh-CN,zh;q=0.9"}
     for url in _build_text_urls(location, unit, lang):
         try:
             async with session.get(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
+                url,
+                headers=_headers(lang),
+                timeout=aiohttp.ClientTimeout(total=timeout),
             ) as resp:
                 if resp.status != 200:
                     continue
@@ -220,7 +245,7 @@ async def _fetch_full_address(session, location, unit, lang, timeout):
 
 def _build_urls(location, fmt, unit, lang):
     """构造主/备两个 wttr.in 请求 URL。"""
-    loc = urllib.parse.quote(location.strip(), safe="+~@")
+    loc = urllib.parse.quote(_safe_str(location), safe="+~@")
     query = [f"format={fmt}"]
     flag = _UNIT_FLAG.get(unit)
     if flag:
@@ -236,20 +261,18 @@ def _build_urls(location, fmt, unit, lang):
     )
 
 
-async def _fetch_json(session, url, timeout):
-    headers = {"User-Agent": "curl/8.0", "Accept-Language": "zh-CN,zh;q=0.9"}
+async def _fetch_json(session, url, timeout, lang=""):
     async with session.get(
-        url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
+        url, headers=_headers(lang), timeout=aiohttp.ClientTimeout(total=timeout)
     ) as resp:
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status}")
         return await resp.json(content_type=None)
 
 
-async def _fetch_png(session, url, timeout):
-    headers = {"User-Agent": "curl/8.0", "Accept-Language": "zh-CN,zh;q=0.9"}
+async def _fetch_png(session, url, timeout, lang=""):
     async with session.get(
-        url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
+        url, headers=_headers(lang), timeout=aiohttp.ClientTimeout(total=timeout)
     ) as resp:
         if resp.status != 200:
             raise RuntimeError(f"HTTP {resp.status}")
@@ -261,7 +284,7 @@ async def _fetch_png(session, url, timeout):
 
 def _png_urls(location, unit, lang):
     """PNG 视图把选项拼进路径而不是查询串，实测 '?'/'&' 选项会 500。"""
-    loc = urllib.parse.quote(location.strip(), safe="+~@")
+    loc = urllib.parse.quote(_safe_str(location), safe="+~@")
     option = _UNIT_FLAG.get(unit, "m")
     lang_path = (lang or "").strip().lower()
     if lang_path in _LANG and _LANG[lang_path] != "zh":
@@ -289,18 +312,29 @@ def _fmt_current(data, fallback_location, unit, display_name=""):
         except (TypeError, ValueError):
             wind_unit = "km/h"
     wind_dir = _WIND_DIR.get(
-        cur.get("winddir16Point", ""), cur.get("winddir16Point", "-")
+        cur.get("winddir16Point", ""), cur.get("winddir16Point", "")
+    ).strip()
+    # 缺风向时把「风  9 km/h」压成「风 9 km/h」，避免双空格/双「风」
+    wind_phrase = (
+        f"风 {wind_dir} {wind} {wind_unit}" if wind_dir else f"风 {wind} {wind_unit}"
     )
     low = day.get("mintempF" if imperial else "mintempC", "-")
     high = day.get("maxtempF" if imperial else "maxtempC", "-")
     astro = (day.get("astronomy") or [{}])[0]
 
+    vis = cur.get("visibilityMiles" if imperial else "visibility", "-")
+    vis_unit = "mi" if imperial else "km"
+    precip = cur.get("precipInches" if imperial else "precipMM", "-")
+    precip_unit = "in" if imperial else "mm"
+    pressure = cur.get("pressureInches" if imperial else "pressure", "-")
+    pressure_unit = "inHg" if imperial else "hPa"
+
     place = display_name or _loc_name(data, fallback_location)
     lines = [
         f"{emoji} {place} · {name}",
         f"温度 {temp}{unit_sym}（体感 {feels}{unit_sym}）  今日 {low}~{high}{unit_sym}",
-        f"湿度 {cur.get('humidity', '-')}%  气压 {cur.get('pressure', '-')} hPa  能见度 {cur.get('visibility', '-')} km",
-        f"风 {wind_dir}风 {wind} {wind_unit}  降水 {cur.get('precipMM', '-')} mm  UV {cur.get('uvIndex', '-')}",
+        f"湿度 {cur.get('humidity', '-')}%  气压 {pressure} {pressure_unit}  能见度 {vis} {vis_unit}",
+        f"{wind_phrase}  降水 {precip} {precip_unit}  UV {cur.get('uvIndex', '-')}",
     ]
     if astro.get("sunrise"):
         lines.append(
@@ -326,12 +360,14 @@ def _fmt_forecast(data, fallback_location, unit, days, display_name=""):
         high = day.get("maxtempF" if imperial else "maxtempC", "-")
         rain = "0"
         if hourly:
-            rain = str(
-                int(
-                    sum(float(h.get("chanceofrain", 0) or 0) for h in hourly)
-                    / len(hourly)
-                )
-            )
+            vals = []
+            for h in hourly:
+                try:
+                    vals.append(float(h.get("chanceofrain", 0) or 0))
+                except (TypeError, ValueError):
+                    continue
+            if vals:
+                rain = str(round(sum(vals) / len(vals)))
         lines.append(
             f"{day.get('date', '?')}  {emoji} {name}  {low}~{high}{unit_sym}  平均降雨概率 {rain}%"
         )
@@ -356,52 +392,61 @@ class WeatherPlugin(Star):
         return default if value is None or value == "" else value
 
     def _resolve_location(self, raw):
-        raw = (raw or "").strip()
+        raw = _safe_str(raw)
         return raw or self._cfg("default_location", DEFAULT_LOCATION)
+
+    def _timeout(self, default):
+        """timeout 配置下限 1 秒；aiohttp 的 total=0 等于永不超时，必须挡住。"""
+        try:
+            return max(1.0, float(self._cfg("timeout", default)))
+        except (TypeError, ValueError):
+            return float(default)
 
     async def _query(self, location, view, days):
         unit = self._cfg("units", "metric")
         lang = self._cfg("language", "zh")
-        timeout = float(self._cfg("timeout", 12))
+        timeout = self._timeout(12)
         fmt = "j1" if view == "forecast" else "j2"
         urls = _build_urls(location, fmt, unit, lang)
         errors = []
+        data = None
         async with aiohttp.ClientSession() as session:
             for url in urls:
                 try:
-                    data = await _fetch_json(session, url, timeout)
-                    # ?T1 纯文本里带 FullAddress；失败不影响天气查询本身。
-                    addr = ""
-                    if self._cfg("use_full_address", True):
-                        try:
-                            addr = await _fetch_full_address(
-                                session, location, unit, lang, timeout
-                            )
-                        except _QUERY_ERRORS as e:
-                            logger.warning(
-                                f"[astrbot_plugin_weather] FullAddress 获取失败: {e}"
-                            )
-                    if view == "forecast":
-                        return _fmt_forecast(data, location, unit, days, addr)
-                    return _fmt_current(data, location, unit, addr)
+                    data = await _fetch_json(session, url, timeout, lang)
+                    break
                 except _QUERY_ERRORS as e:  # 主域名失败时换备用域名
                     errors.append(f"{urllib.parse.urlsplit(url).netloc}: {e}")
                     logger.warning(f"[astrbot_plugin_weather] 请求失败 {url}: {e}")
-        raise RuntimeError("天气服务不可用（" + "; ".join(errors) + "）")
+        if data is None:
+            raise RuntimeError("天气服务不可用（" + "; ".join(errors) + "）")
+
+        # 格式化在重试循环之外：上游字段异常降级显示，不再伪装成「服务不可用」。
+        addr = ""
+        if self._cfg("use_full_address", True):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    addr = await _fetch_full_address(
+                        session, location, unit, lang, timeout
+                    )
+            except _QUERY_ERRORS as e:
+                logger.warning(f"[astrbot_plugin_weather] FullAddress 获取失败: {e}")
+        if view == "forecast":
+            return _fmt_forecast(data, location, unit, days, addr)
+        return _fmt_current(data, location, unit, addr)
 
     async def _one_line(self, location):
         unit = self._cfg("units", "metric")
         lang = self._cfg("language", "zh")
-        timeout = float(self._cfg("timeout", 12))
+        timeout = self._timeout(12)
         urls = _build_urls(location, "3", unit, lang)
-        headers = {"User-Agent": "curl/8.0", "Accept-Language": "zh-CN,zh;q=0.9"}
         errors = []
         async with aiohttp.ClientSession() as session:
             for url in urls:
                 try:
                     async with session.get(
                         url,
-                        headers=headers,
+                        headers=_headers(lang),
                         timeout=aiohttp.ClientTimeout(total=timeout),
                     ) as resp:
                         if resp.status != 200:
@@ -417,13 +462,14 @@ class WeatherPlugin(Star):
 
     async def _png_bytes(self, location):
         unit = self._cfg("units", "metric")
-        timeout = float(self._cfg("timeout", 20))
-        urls = _png_urls(location, unit, self._cfg("language", "zh"))
+        lang = self._cfg("language", "zh")
+        timeout = self._timeout(20)
+        urls = _png_urls(location, unit, lang)
         errors = []
         async with aiohttp.ClientSession() as session:
             for url in urls:
                 try:
-                    return await _fetch_png(session, url, timeout)
+                    return await _fetch_png(session, url, timeout, lang)
                 except _QUERY_ERRORS as e:
                     errors.append(f"{urllib.parse.urlsplit(url).netloc}: {e}")
                     logger.warning(f"[astrbot_plugin_weather] PNG 请求失败 {url}: {e}")
@@ -473,9 +519,14 @@ class WeatherPlugin(Star):
 
     @filter.command("weather", alias={"天气", "tianqi", "wttr"})
     async def cmd_weather(self, event: AstrMessageEvent, location: str = ""):
-        """天气查询：/weather [地点] [now|forecast|img|help|天数]，不带地点用默认城市"""
+        """天气查询：/weather [地点] [now|forecast|img|help|天数]，不带地点用默认城市
+
+        AstrBot 只把第一个 token 填进 location，多余 token 会丢弃；因此地点一律
+        由 _parse_args 从 message_str 二次解析，绝不用 location 兜底（否则纯模式词
+        会被当成同名地点）。location 参数仅为满足 handler 签名而保留。
+        """
         sub, rest, days = self._parse_args(event)
-        loc = self._resolve_location(rest or location)
+        loc = self._resolve_location(rest)
         if sub == "help":
             yield event.plain_result(self.HELP_TEXT)
             return
@@ -516,9 +567,15 @@ class WeatherPlugin(Star):
 
     @filter.command("forecast", alias={"天气预报", "预报"})
     async def cmd_forecast(self, event: AstrMessageEvent, location: str = ""):
-        """多日预报快捷命令：/forecast [地点]"""
-        loc = self._resolve_location(location)
-        days = int(self._cfg("forecast_days", 3))
+        """多日预报快捷命令：/forecast [地点]（多词地点同样走 message_str 解析）"""
+        _, rest, days = self._parse_args(event)
+        loc = self._resolve_location(rest)
+        if not days:
+            try:
+                days = int(self._cfg("forecast_days", 3))
+            except (TypeError, ValueError):
+                days = 3
+        days = max(1, min(3, days))
         try:
             yield event.plain_result(await self._query(loc, "forecast", days))
         except _QUERY_ERRORS as e:
