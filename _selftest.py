@@ -283,8 +283,8 @@ async def run():
         "示意）" in README and "31.23,121.47" not in README and "518000" not in README,
     )
     check(
-        "更新日志含 v1.2.2 与 getweatherimage",
-        "### v1.2.2" in README and "getweatherimage" in README,
+        "更新日志 v1.2.2 措辞",
+        "### v1.2.2" in README and "添加天气图审阅工具并修复已知bug" in README,
     )
     check(
         "保留 v1.2.1 历史日志", "### v1.2.1" in README and "修复部分已知bug" in README
