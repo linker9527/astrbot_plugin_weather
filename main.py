@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import base64
 import re
 import urllib.parse
 
@@ -379,7 +380,7 @@ def _fmt_forecast(data, fallback_location, unit, days, display_name=""):
     "astrbot_plugin_weather",
     "linker9527",
     "基于 wttr.in 的天气查询：当前天气、多日预报、一行速览、PNG 天气图",
-    "1.2.1",
+    "1.2.2",
     "https://github.com/linker9527/astrbot_plugin_weather",
 )
 class WeatherPlugin(Star):
@@ -504,8 +505,9 @@ class WeatherPlugin(Star):
     def _parse_args(event):
         """剥掉命令名，取出 (模式, 地点, 天数)。
 
-        模式词可出现在地点前或后。仅当最后一个词是纯数字 1~3 时才当作天数，
-        避免把 94107 这类邮编/区号误判成天数。
+        模式词可出现在地点前或后，且全部从地点里剔除（多写不会把词当地点）。
+        天数取任意位置出现的纯数字 1~3（最后一个生效）；更长的数字如 94107
+        视为邮编/区号保留在地点里，不误判成天数。
         """
         parts = (event.message_str or "").strip().split()
         if parts:
@@ -513,14 +515,16 @@ class WeatherPlugin(Star):
             if first in _COMMAND_WORDS:
                 parts = parts[1:]
         days = 0
-        if parts and parts[-1] in ("1", "2", "3"):
-            days = int(parts.pop())
         mode = ""
         loc_parts = []
         for token in parts:
             key = token.lower()
-            if key in _MODE_WORDS and not mode:
-                mode = _MODE_WORDS[key]
+            if token in ("1", "2", "3"):
+                days = int(token)
+            elif key in _MODE_WORDS:
+                # 所有模式词都从地点里剔除；mode 只取第一个，后续不覆盖。
+                if not mode:
+                    mode = _MODE_WORDS[key]
             else:
                 loc_parts.append(token)
         return mode, " ".join(loc_parts), days
@@ -621,6 +625,48 @@ class WeatherPlugin(Star):
         except _QUERY_ERRORS as e:
             logger.error(f"[astrbot_plugin_weather] llm_tool oneline 失败: {e}")
             yield event.plain_result(f"查询「{loc}」失败：{e}")
+
+    @llm_tool(name="getweatherimage")
+    async def tool_image(self, event: AstrMessageEvent, location: str = ""):
+        """获取指定地点的 wttr.in PNG 天气图，返回给大模型查看，不直接发给用户。
+
+        用户想看天气图、想把图发给别人、或你需要在回答里配一张天气图时调用。
+        图片会作为工具结果返回供你审阅；确认合适后可用 send_message_to_user 发给用户，
+        也可以先对用户说几句再发。
+
+        Args:
+            location(string): 地点名称，如 北京、London、muc；留空则查询默认城市
+        """
+        if not self.config.get("enable_llm_tools", True):
+            return "天气工具已在插件配置中关闭"
+        loc = self._resolve_location(location)
+        try:
+            png = await self._png_bytes(loc)
+        except _QUERY_ERRORS as e:
+            logger.error(f"[astrbot_plugin_weather] llm_tool image 失败: {e}")
+            return f"获取「{loc}」天气图失败：{e}"
+
+        try:
+            from mcp.types import CallToolResult, ImageContent, TextContent
+        except ImportError:
+            # 旧版 AstrBot 无 mcp 时降级：只给文本，不把图当工具结果返回
+            logger.warning(
+                "[astrbot_plugin_weather] 缺少 mcp.types，图片工具降级为文本"
+            )
+            return (
+                f"已获取「{loc}」天气图，但当前 AstrBot 版本不支持把图片返回给大模型。"
+            )
+
+        b64 = base64.b64encode(png).decode("ascii")
+        return CallToolResult(
+            content=[
+                TextContent(
+                    type="text",
+                    text=f"已生成「{loc}」的 wttr.in 天气图（PNG，{len(png)} 字节）。请查看下方图片。",
+                ),
+                ImageContent(type="image", data=b64, mimeType="image/png"),
+            ]
+        )
 
     async def terminate(self):
         """插件卸载时无需清理：网络会话随请求结束即关闭。"""

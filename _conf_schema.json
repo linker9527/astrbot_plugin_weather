@@ -18,7 +18,8 @@
     "hint": "影响 wttr.in 上游描述；本插件的天气状况名称固定用中文并带 emoji。",
     "type": "string",
     "default": "zh",
-    "options": ["zh", "en", "ja", "ko", "fr", "de", "es", "ru"]
+    "options": ["zh", "zh-cn", "zh-tw", "en", "ja", "ko", "fr", "de", "es", "ru"],
+    "labels": ["简体中文", "简体中文(别名)", "繁体中文(别名)", "English", "日本語", "한국어", "Français", "Deutsch", "Español", "Русский"]
   },
   "forecast_days": {
     "description": "预报天数",
@@ -29,7 +30,7 @@
   },
   "enable_llm_tools": {
     "description": "LLM 天气工具",
-    "hint": "开启后大模型可调用 getweather / getweatheroneline，用自然语言问天气。关闭则纯命令模式，不消耗 token。",
+    "hint": "开启后大模型可调用 getweather / getweatheroneline / getweatherimage，用自然语言问天气。关闭后工具仍会注册进 LLM 请求（schema 照常占用 token），但调用时只回复一句「已关闭」；纯命令模式请直接停用插件或在会话中禁用该工具。",
     "type": "bool",
     "default": true
   },

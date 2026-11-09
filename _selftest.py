@@ -139,6 +139,36 @@ def llm_tool(*args, **kwargs):
 
 all_mod.llm_tool = llm_tool
 
+# ---- stub mcp.types（真实 AstrBot 自带；此处仅用于验证工具返回结构）----
+mcp = types.ModuleType("mcp")
+mcp_types = types.ModuleType("mcp.types")
+
+
+class _TextContent:
+    def __init__(self, type=None, text=None, **kwargs):
+        self.type = type
+        self.text = text
+
+
+class _ImageContent:
+    def __init__(self, type=None, data=None, mimeType=None, **kwargs):
+        self.type = type
+        self.data = data
+        self.mimeType = mimeType
+
+
+class _CallToolResult:
+    def __init__(self, content=None, **kwargs):
+        self.content = content or []
+
+
+mcp_types.TextContent = _TextContent
+mcp_types.ImageContent = _ImageContent
+mcp_types.CallToolResult = _CallToolResult
+mcp.types = mcp_types
+sys.modules["mcp"] = mcp
+sys.modules["mcp.types"] = mcp_types
+
 sys.modules["astrbot"] = astrbot
 sys.modules["astrbot.api"] = api
 sys.modules["astrbot.api.star"] = star
@@ -187,10 +217,77 @@ async def run():
         "repo: https://github.com/linker9527/astrbot_plugin_weather" in meta,
     )
     check("register author", main.WeatherPlugin._register_args[1] == "linker9527")
-    check("metadata version", "version: 1.2.1" in meta)
+    check("metadata version", "version: 1.2.2" in meta)
     check(
-        "更新日志含 v1.2.1 与说明",
-        "### v1.2.1" in README and "修复部分已知bug" in README,
+        "N7 astrbot_version 门槛",
+        'astrbot_version: ">=4.22.0,<5"' in meta,
+    )
+    check(
+        "N2 schema hint 列全三个工具",
+        all(
+            n in schema["enable_llm_tools"]["hint"]
+            for n in ("getweather", "getweatheroneline", "getweatherimage")
+        ),
+    )
+    check(
+        "N2 已删除不消耗 token 说法",
+        "不消耗 token" not in README
+        and "不消耗 token" not in schema["enable_llm_tools"]["hint"],
+    )
+    check(
+        "N2 兼容性说明",
+        ">=4.22.0" in README and "4.22.0+" in README,
+    )
+    check(
+        "Q1/Q2 文档措辞已修正",
+        "版本门槛已保证 mcp 存在" in README
+        and "旧版无法安装" in README
+        and "旧版缺该依赖时自动降级" not in README,
+    )
+    check(
+        "Q4 schema language 补 zh-cn / zh-tw",
+        "zh-cn" in schema["language"]["options"]
+        and "zh-tw" in schema["language"]["options"],
+    )
+    check(
+        "N5 README 有 /forecast 表格行",
+        "| `/forecast 北京`" in README,
+    )
+    check(
+        "README 标注最高精度街道/社区级（虚构示例）",
+        "最高精度：街道 / 社区级" in README
+        and "演示用虚构写法" in README
+        and "不是「输路名就精准定位」" in README,
+    )
+    check(
+        "README 不残留真实地址示例",
+        all(
+            s not in README
+            for s in (
+                "沙河街道",
+                "福中社区",
+                "上海市黄浦区南京东路",
+                "深圳市福田区深南大道",
+                "山东菏泽",
+                "22.5442673",
+                "Avenue Anatole France",
+            )
+        ),
+    )
+    check(
+        "README 含「只写城市+路名会偏」的示意反例",
+        "仍可能偏" in README and "外省同名路" in README,
+    )
+    check(
+        "README 坐标/邮编为示意占位",
+        "示意）" in README and "31.23,121.47" not in README and "518000" not in README,
+    )
+    check(
+        "更新日志含 v1.2.2 与 getweatherimage",
+        "### v1.2.2" in README and "getweatherimage" in README,
+    )
+    check(
+        "保留 v1.2.1 历史日志", "### v1.2.1" in README and "修复部分已知bug" in README
     )
     check(
         "description 突出免费",
@@ -204,7 +301,28 @@ async def run():
         "短长简介不含 Markdown 星号",
         "short_desc: *" not in meta and "description: *" not in meta,
     )
-    check("schema json valid", isinstance(schema, dict))
+    check(
+        "schema 结构有效（顶层为对象且每项含合法 type）",
+        isinstance(schema, dict)
+        and len(schema) > 0
+        and all(
+            isinstance(v, dict)
+            and v.get("type")
+            in (
+                "string",
+                "text",
+                "int",
+                "float",
+                "bool",
+                "object",
+                "list",
+                "dict",
+                "template_list",
+                "file",
+            )
+            for v in schema.values()
+        ),
+    )
     check(
         "schema has all cfg keys",
         all(
@@ -232,8 +350,14 @@ async def run():
         "register args",
         main.WeatherPlugin._register_args[0] == "astrbot_plugin_weather",
     )
-    check("register version", main.WeatherPlugin._register_args[3] == "1.2.1")
-    handlers = ["cmd_weather", "cmd_forecast", "tool_get_weather", "tool_oneline"]
+    check("register version", main.WeatherPlugin._register_args[3] == "1.2.2")
+    handlers = [
+        "cmd_weather",
+        "cmd_forecast",
+        "tool_get_weather",
+        "tool_oneline",
+        "tool_image",
+    ]
     for name in handlers:
         fn = getattr(main.WeatherPlugin, name)
         check(f"handler exists: {name}", callable(fn))
@@ -277,6 +401,28 @@ async def run():
         "parse forecast + city",
         P._parse_args(AstrMessageEvent("/weather forecast 北京"))
         == ("forecast", "北京", 0),
+    )
+    # Q3：多写模式词时，后续模式词从地点里剔除，不再当成地点的一部分
+    check(
+        "Q3 now img 上海 -> 地点只剩上海",
+        P._parse_args(AstrMessageEvent("/weather now img 上海")) == ("now", "上海", 0),
+    )
+    check(
+        "Q3 上海 2 now -> 模式now 天数2 地点上海",
+        P._parse_args(AstrMessageEvent("/weather 上海 2 now")) == ("now", "上海", 2),
+    )
+    check(
+        "Q3 天数在中间 2 上海 -> 天数2 地点上海",
+        P._parse_args(AstrMessageEvent("/weather 2 上海")) == ("", "上海", 2),
+    )
+    check(
+        "Q3 forecast 北京 img -> 地点北京 模式forecast",
+        P._parse_args(AstrMessageEvent("/weather forecast 北京 img"))
+        == ("forecast", "北京", 0),
+    )
+    check(
+        "天数任意位置不误判邮编",
+        P._parse_args(AstrMessageEvent("/weather 94107 2")) == ("", "94107", 2),
     )
     check(
         "parse pic + city",
@@ -477,9 +623,17 @@ async def run():
     }
     fbt = main._fmt_forecast(bad, "X", "metric", 1)
     check("B4 chanceofrain=N/A 不抛异常", "平均降雨概率 50%" in fbt, fbt)
-    # B6：快捷命令天数 clamp，用 _parse_args + 配置极值验证（不读文件，避免 lint）
+    # B6：直接调用插件的 _forecast_days() 验证 clamp，不在测试里重写表达式
     p6 = main.WeatherPlugin(Context(), {"forecast_days": 10, "timeout": 12})
-    check("B6 天数 clamp 上限 3", max(1, min(3, int(p6._cfg("forecast_days", 3)))) == 3)
+    check("B6 _forecast_days 把 10 夹到 3", p6._forecast_days() == 3)
+    check(
+        "B6 _forecast_days 覆盖 0 / 非法值 / 空值",
+        main.WeatherPlugin(Context(), {"forecast_days": 0})._forecast_days() == 1
+        and main.WeatherPlugin(Context(), {"forecast_days": "abc"})._forecast_days()
+        == 3
+        and main.WeatherPlugin(Context(), {"forecast_days": None})._forecast_days()
+        == 3,
+    )
     # pure helpers
     u1, u2 = main._build_urls("北京", "j2", "metric", "zh")
     check(
@@ -720,11 +874,65 @@ async def run():
     out = await collect(plugin.tool_oneline(ev, "muc"))
     check("llm_tool oneline airport code", len(text_of(out)) < 80)
 
+    # 图片工具：返回 CallToolResult 交给 LLM，不直接 yield 到对话
+    img_ret = await plugin.tool_image(ev, "London")
+    check(
+        "getweatherimage 返回 CallToolResult",
+        isinstance(img_ret, _CallToolResult),
+        type(img_ret).__name__,
+    )
+    images = (
+        [c for c in img_ret.content if c.type == "image"]
+        if hasattr(img_ret, "content")
+        else []
+    )
+    texts = (
+        [c for c in img_ret.content if c.type == "text"]
+        if hasattr(img_ret, "content")
+        else []
+    )
+    check("结果含 1 张 ImageContent", len(images) == 1, f"images={len(images)}")
+    check("结果含文本说明", len(texts) == 1 and "London" in texts[0].text)
+    if images:
+        import base64 as _b64
+
+        raw = _b64.b64decode(images[0].data)
+        check(
+            "图片是有效 PNG 且体积合理",
+            raw[:8] == b"\x89PNG\r\n\x1a\n" and len(raw) > 5000,
+            f"bytes={len(raw)} mime={images[0].mimeType}",
+        )
+    # 图片工具是协程（return CallToolResult），不是 async generator（不会直接 yield 到对话）
+    import inspect
+
+    check(
+        "工具为协程函数而非异步生成器",
+        inspect.iscoroutinefunction(main.WeatherPlugin.tool_image)
+        and not inspect.isasyncgenfunction(main.WeatherPlugin.tool_image),
+    )
+    check(
+        "返回结果含 content 且元素为 Text/Image 内容块",
+        hasattr(img_ret, "content")
+        and {getattr(c, "type", None) for c in img_ret.content} == {"text", "image"},
+    )
+
     plugin_off = main.WeatherPlugin(
         Context(), {"enable_llm_tools": False, "default_location": "Beijing"}
     )
     out = await collect(plugin_off.tool_get_weather(ev, "Beijing"))
     check("llm_tool disabled gate", "关闭" in text_of(out))
+    off_ret = await plugin_off.tool_image(ev, "Beijing")
+    check(
+        "图片工具关闭开关返回文本",
+        isinstance(off_ret, str) and "关闭" in off_ret,
+        repr(off_ret),
+    )
+    bad_ret = await plugin.tool_image(ev, "zzzznotaplace99999")
+    check(
+        "图片工具失败返回文本而非崩溃",
+        isinstance(bad_ret, str) and "失败" in bad_ret,
+        repr(bad_ret)[:80],
+    )
 
     out = await collect(cmd_weather("/weather zzzznotaplace99999"))
     check(
